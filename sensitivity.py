@@ -70,6 +70,11 @@ from astropy.time import Time
 import bisect
 import os
 import subprocess
+import pytz
+
+from astropy.coordinates import EarthLocation
+import astropy.units as u
+from scipy.optimize import minimize_scalar
 
 
 # Load in pulsar dataframe for pulsar beamforming
@@ -765,17 +770,19 @@ def just_toa(singlebeam, DM=None):
             frb_master_event = master.events.get_event(event_id)
             DM = frb_master_event['measured_parameters'][-1]['dm']
     print("DM={0:.2f} pc/cc...".format(DM))
-    toa=(get_TOA(data, DM=DM)/ 86400.0 ) + 2440587.5 - 2400000.5 #in MJD
+    toa=get_TOA(data, DM=DM) #In unix time
     print(toa)
     return toa
 
-def _get_src_transit_from_hdf5(path_to_hdf5, src, obs = kko):
+def _get_src_transit_from_hdf5(path_to_hdf5, src, obs = chime):
     """"""
     files = sorted(os.listdir(path_to_hdf5))
     start_data = h5py.File(path_to_hdf5+files[0], 'r')
     end_data = h5py.File(path_to_hdf5+files[-1], 'r')
     start_time = unix_to_datetime(start_data['index_map']['time']['ctime'][0])
+    print("start time to look for source", start_time)
     end_time = unix_to_datetime(end_data['index_map']['time']['ctime'][-1])
+    print("end time to look for source", end_time)
 
     del start_data
     del end_data
@@ -798,10 +805,10 @@ def _find_hdf5_from_unix(path_to_hdf5, transit_times):
 
         for file_idx, f in enumerate(files):
             _data = h5py.File(path_to_hdf5+f, 'r')
-
+            
             # Index times contained in the file
             _times = _data['index_map']['time']['ctime']
-
+            start=_times[0]
             if _times[-1] < t:
                 pass
 
@@ -815,7 +822,7 @@ def _find_hdf5_from_unix(path_to_hdf5, transit_times):
                 transit_idxs.append(idx_t)
 
                 break
-
+                
     return filenames, file_idxs, unix_times, transit_idxs
 
 
@@ -856,7 +863,7 @@ def _get_connected_inputs(unix_timestamp, correlator='FCG',inputmap = None):
 
 def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gains_output_dir = '/arc/projects/chime_frb/rdarlinger/gain_solutions/', 
                       correlator = 'FCG', obs=gbo, badinps=None,input_pkl_file='/arc/projects/chime_frb/rdarlinger/gboinputs_correct.pkl',
-                      median=None,percent_of_band=0.1,max_dev=5.):
+                      median=None,percent_of_band=0.1,max_dev=10.):
     if src_str == "cyga":
         src = CygA
     elif src_str == "casa":
@@ -1529,12 +1536,12 @@ def plot_diagnostic(
     
 def find_files(file, file_path, toa_from_singlebeam, src_str="cyga", telescope="gbo"):
     """
-    Finds transit time of source and finds corresponding file to that transit time plus checks if there are 20 minutes on either side
+    Finds transit time of source closest to toa specified and finds corresponding file to that transit time plus checks if there are 20 minutes on either side
     of the given transit time
     
-    NOTE: For use you need a file of the names of the N2 files in the container folder which you can 
+    NOTE: For use, you need a file of the names of the N2 files in the container folder which you can 
     get by "datatrail ls gbo.acquisition.processed commissioning"
-    to look at the container files, then "datatrail ps gbo.acquisition.processed 20241204T174051Z_gbo_corr --show-files" to get the txt file
+    to look at the container files, then "datatrail ps gbo.acquisition.processed 20241204T174051Z_gbo_corr --show-files > name.txt" to get the txt file
     Parameters
     -------------
     file: str
@@ -1581,7 +1588,7 @@ def find_files(file, file_path, toa_from_singlebeam, src_str="cyga", telescope="
                 common_path=match_common_path.group(1)
                 print("Container file is", common_path)
         # find filenames 
-        match_file_ids = re.match(r'\s*│\s*-\s*(\d+_\d+\.h5)', line.strip())
+        match_file_ids = re.match(r'\s*│\s*-\s*(\d{8}_\d{4}\.h5)', line.strip())
         if match_file_ids:
             name = match_file_ids.group(1)
             file_id_float = float(name.split('_')[0])
@@ -1601,32 +1608,32 @@ def find_files(file, file_path, toa_from_singlebeam, src_str="cyga", telescope="
 
     # Convert to Unix time
     common_path_unix_time = time_obj.unix
-    toa_unix= (toa-40587)*86400 #convert to unix time
-    time_to_match=toa_unix
+    print("Common path unix time",common_path_unix_time)
+    time_to_match=toa_from_singlebeam
     print("Time to match is", time_to_match)
     
-    file_ids.sort()
     start_time = min(file_ids)+common_path_unix_time # or specify manually
+    print("Start time in unix time is:", start_time)
+
     end_time = max(file_ids)+common_path_unix_time
+    print('End time in unix time is:', end_time)
     
-    transit_times = np.asarray(obs.transit_times(src, start_time, end_time))
-    print("transit times are:", transit_times)
-    
-    index = bisect.bisect_right(transit_times, time_to_match)
-    file_transit_initial=transit_times[index] #finds the NEXT transit
+    transit_times = np.asarray(chime.transit_times(src, start_time, end_time)) #For GBO observations, need to get transit time at CHIME
+    print("Transit times are:", transit_times)
+    index = bisect.bisect_left(transit_times, time_to_match)
+    file_transit_initial=transit_times[index - 1] #finds the previous transit
     print("Closest transit time is:", file_transit_initial)
     file_transit=file_transit_initial-common_path_unix_time #get into same units as the file_ids
     print("Closest transit in time from container file is:", file_transit)
-    index2= bisect.bisect_right(file_ids, file_transit)
+    index2= bisect.bisect_left(file_ids, file_transit)
     file=file_ids[index2-1]
-    file_index = file_ids.index(file)
-    matching_file_name = file_names[file_index]
+    matching_file_name = file_names[index2-1]
     if index2 < len(file_ids):  # check bounds
         if file_ids[index2] - file_transit < 1200:
             file_2 = file_ids[index2]
 
     if index2 - 1 >= 0:
-        if file_transit - file_ids[index2 - 2] < 1200:
+        if file_transit - file_ids[index2 - 1] < 1200:
             file_2 = file_ids[index2 - 2]
     file_2_name=None
     if file_2 is not None:
@@ -1641,7 +1648,71 @@ def find_files(file, file_path, toa_from_singlebeam, src_str="cyga", telescope="
     print("File containing time:", file, "and next file time to make sure:", file_ids[index2], "File 2 is", file_2)
     
     subprocess.run(["pip", "install", "--upgrade", "datatrail-cli"])
-    cmd = f"echo Y | datatrail pull -s {file_path} gbo.acquisition.processed {common_path}_gbo_corr"
+    cmd = f"echo Y | datatrail pull -s {file_path} {telescope}.acquisition.processed {common_path}_{telescope}_corr"
     subprocess.run(cmd, shell=True, check=True)
     
     return [file_transit_initial]
+
+def find_transits(src, latitude_deg, longitude_deg, elevation_m=0,
+                          start_time=None, end_time=None):
+    """
+    Find all transit times (hour angle = 0) for a star between start and end time using Astropy.
+
+    Parameters:
+        star : skyfield.starlib.Star
+            Skyfield Star object.
+        latitude_deg : float
+            Latitude of the telescope (degrees).
+        longitude_deg : float
+            Longitude of the telescope (degrees).
+        elevation_m : float
+            Elevation of the telescope (meters).
+        start_time : float
+            Start time as UNIX timestamp (seconds since epoch).
+        end_time : float
+            End time as UNIX timestamp (seconds since epoch).
+
+    Returns:
+        List of transit times in UNIX time.
+    """
+    if start_time is None or end_time is None:
+        raise ValueError("Both start_time and end_time must be provided as UNIX timestamps.")
+
+    # Convert times to Astropy Time objects
+    t_start = Time(start_time, format='unix')
+    t_end = Time(end_time, format='unix')
+
+    # Convert Skyfield Star to Astropy SkyCoord
+    ra = src.ra.radians * u.rad
+    dec = src.dec.radians * u.rad
+    coord = SkyCoord(ra=ra, dec=dec, frame="icrs")
+
+    # Observer location
+    location = EarthLocation(lat=latitude_deg * u.deg,
+                             lon=longitude_deg * u.deg,
+                             height=elevation_m * u.m)
+
+    # Step through time in 1 sidereal day increments
+    SIDEREAL_DAY = 0.9972696  # in solar days
+    step = SIDEREAL_DAY * u.day
+    current_time = t_start
+    transits = []
+
+    while current_time < t_end:
+        # Minimize hour angle over ±6 hours around current time
+        def ha_abs(dt_sec):
+            t = current_time + dt_sec * u.s
+            lst = t.sidereal_time("apparent", longitude=location.lon)
+            ha = (lst - coord.ra).wrap_at(180 * u.deg)
+            return abs(ha.deg)
+
+        result = minimize_scalar(ha_abs, bounds=(-21600, 21600), method="bounded")
+        transit_time = current_time + result.x * u.s
+
+        # Check if result is in range
+        if t_start <= transit_time <= t_end:
+            transits.append(transit_time.unix)
+
+        current_time += step
+
+    return transits
