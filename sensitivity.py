@@ -75,6 +75,7 @@ import pytz
 from astropy.coordinates import EarthLocation
 import astropy.units as u
 from scipy.optimize import minimize_scalar
+from matplotlib.colors import LogNorm
 
 
 # Load in pulsar dataframe for pulsar beamforming
@@ -861,7 +862,8 @@ def _get_connected_inputs(unix_timestamp, correlator='FCG',inputmap = None):
 
 
 def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gains_output_dir = '/arc/projects/chime_frb/rdarlinger/gain_solutions/', 
-                      correlator = 'FCG', obs=gbo, badinps=None,input_pkl_file='/arc/projects/chime_frb/rdarlinger/gboinputs_correct.pkl',
+                      correlator = 'FCG', obs=gbo, badinps=None,input_pkl_file='/arc/projects/chime_frb/rdarlinger/gboinputs_correct.pkl', 
+                      plot_output_dir="/arc/projects/chime_frb/rdarlinger/gain_solutions/plots/",
                       median=None,percent_of_band=0.1,max_dev=10.):
     if src_str == "cyga":
         src = CygA
@@ -943,6 +945,7 @@ def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gain
                     print('Found bad input(s):', flagged_inputs_new)
                     flagged_ids = list(flagged_inputs_new) + flagged_ids
                     print('Recalculating gains, final list of bad inputs:', flagged_ids)
+                    print("Number of bad inputs:", len(flagged_ids))
                     gains, weights, gain_err = _solve_gain_wrapper(_vis, _inputmap, _connected_inps,_transit_time,_freqs,src, obs, flagged_ids,transit_idxs,i)
 
             
@@ -961,9 +964,21 @@ def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gain
                     h5pyfile.create_dataset("index_map/freq", data = _freqs)
                     h5pyfile.create_dataset("index_map/input", data = _index_map['input'])
                     h5pyfile.create_dataset("flagged_ids", data =flagged_ids)
+            file=h5py.File(filepath, "r")
+            gain=np.asarray(file['gain'])
+            print(gain.shape)
+            
+            datetime_obj = unix_to_datetime(unix_times[i]).astimezone(timezone.utc)
+            plt.imshow(np.abs(gain), norm=LogNorm(vmin=1,vmax=10))
+            plt.title(f"Gain for {datetime_obj}")
+            plt.xlabel("Input")
+            plt.ylabel("Frequency")
+            plt.colorbar()
+            filepath=os.path.join(plot_output_dir, f"gain_{datetime_obj}.png"
+            plt.savefig(f"/arc/projects/chime_frb/rdarlinger/gain_solutions/plots/gain_{unix_times[i]}.png")
         else: 
             print(filepath, ' already exists!')
-            
+
 
 
     return
@@ -1344,7 +1359,6 @@ def get_bad_inputs(path_to_txt_file):
             if len(parts) > 1:
                 chid = parts[1].split(',')[0].strip()
                 bad_inputs_list.append(int(chid))
-    
     return bad_inputs_list
 
 def get_simple_median(gains): 
