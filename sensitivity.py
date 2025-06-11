@@ -141,8 +141,6 @@ def waterfall_pulsar2(
             frb_master_event = master.events.get_event(event_id)
             DM = frb_master_event['measured_parameters'][-1]['dm']
     print("DM={0:.2f} pc/cc...".format(DM))
-    toa=(get_TOA(data, DM=DM)/ 86400.0 ) + 2440587.5 - 2400000.5 #In MJD
-    print(toa)
 
     print("Coherently dedisperse...")
     coherent_dedisp(data, DM, time_shift=False, write=True)
@@ -165,7 +163,7 @@ def waterfall_pulsar2(
         save_dir = save_dir,
         snr = snr,
     )
-    return fig, toa
+    return fig
 
 def _waterfall_pulsar2(
     power,
@@ -354,6 +352,7 @@ def process_data(events, telescope):
     Power: .h5 file
         power of events saved from the use of the waterfall_pulsar function
         '''
+    master = frb_master.FRBMaster()
     snrs = []
     dms = []
     source_names = []
@@ -449,7 +448,7 @@ def process_data(events, telescope):
             print("Calibration file: {}".format(cal_h5))
 
             print("Set output location for singlebeam")
-            out_file = '/arc/home/rdarlinger/singlebeams/singlebeam_{0}_{1}.h5'.format(telescope, event_id)
+            out_file = '/arc/projects/chime_frb/rdarlinger/singlebeams/singlebeam_{0}_{1}.h5'.format(telescope, event_id)
             print('Saving singlebeam to', out_file)
 
             if os.path.exists(out_file):
@@ -535,7 +534,7 @@ def process_data(events, telescope):
 
 
             print("Specify save directory")
-            save_dir = '/arc/home/rdarlinger/waterfalls'
+            save_dir = '/arc/projects/chime_frb/rdarlinger/waterfalls'
 
             # Create figure
             print(dt, singlebeam, telescope, src_name)
@@ -554,7 +553,7 @@ def process_data(events, telescope):
             exceptions.append(e)
             exception_ids.append(event_id)
             continue
-        return dates 
+    return dates 
     
 def SNR(event_id, file_path, power_path, telescope1="chime", telescope2="gbo", pulse_start=None, pulse_end=None):
     '''Finds SNR values for two telescopes and saves the values
@@ -641,7 +640,7 @@ def SNR(event_id, file_path, power_path, telescope1="chime", telescope2="gbo", p
     print(peak_bing)
     peakg = powerg[peak_bing]
     plt.plot(powerg)
-    plt.axvline(pulse_start+31, color="red")
+    plt.axvline(pulse_start+31, color="red") #31 is so it lines up with pulse since it is not 1 to 1 from CHIME
     plt.axvline(pulse_end+31, color="red")
     plt.title("After Standardize")
     plt.show()
@@ -689,7 +688,7 @@ def plot_SNR(snr_file, out_file):
     snr = df["SNR"].values
 
     # Compute successive ratios: telescope / chime
-    r = [snr[i+1] / snr[i] for i in range(0, len(snr), 2)]
+    r = [snr[i] / snr[i-1] for i in range(1, len(snr), 2)]
     dates=pd.to_datetime(df["Date"])
     dates=dates.values[::2]
     print(dates)
@@ -736,7 +735,7 @@ def run_waterfall_from_singlebeam(singlebeam, telescope, event_i):
     source_name = event['event_best_data']['source_category_name']
     dm = event['event_best_data']['dm']
     src_name="B0329+54"
-    save_dir="/arc/home/rdarlinger/waterfalls/temp"
+    save_dir="/arc/projects/chime_frb/rdarlinger/waterfalls/temp"
     toa = waterfall_pulsar2(
                 dt, singlebeam, telescope, src_name, 
                 downsample_factor_ms = 0.1, DM = None, 
