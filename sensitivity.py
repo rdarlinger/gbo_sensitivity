@@ -94,7 +94,7 @@ def waterfall_pulsar2(
     date, singlebeam, telescope, src_name, 
     downsample_factor_ms = 1.0, DM = None, 
     save_dir = None, pulsar_df = pulsar_df,
-    snr = None,
+    snr = None, gain=None
 ):
     """
     Wrapper of the _waterfall_pulsar function. Plots a waterfall and integrated intensity profile for a given singlebeam, dedispersing 
@@ -162,7 +162,7 @@ def waterfall_pulsar2(
         date_str = date_str,
         DM = DM,
         save_dir = save_dir,
-        snr = snr,
+        snr = snr, gain=gain
     )
     return fig
 
@@ -175,7 +175,7 @@ def _waterfall_pulsar2(
     date_str,
     DM,
     save_dir = None,
-    snr = None,
+    snr = None, gain=None
 ):
     """
     Simple waterfall plotting function for a given array.
@@ -310,21 +310,21 @@ def _waterfall_pulsar2(
         print("Saving plot to: {}".format("{}/{}_{}_{}_{}_waterfall.png".format(save_dir, event_id, src_name, date_str, telescope)))
         plt.savefig("{}/{}_{}_{}_{}_waterfall.png".format(save_dir, event_id, src_name, date_str, telescope), dpi=300, bbox_inches="tight")
 
-        file_path="power.h5"
+        file_path="power_9_20.h5"
         with h5py.File(file_path, 'a') as f:
             # Ensure event group and telescope group exist (create if not)
             event_group = f.require_group(str(event_id))
             telescope_group = event_group.require_group(telescope)
-
+            subgroup = telescope_group.require_group(gain)
             # Overwrite Power dataset if it exists
-            if "Power" in telescope_group:
-                del telescope_group["Power"]
+            if "Power" in subgroup:
+                del subgroup["Power"]
 
             # Write new Power dataset and Date attribute
-            telescope_group.create_dataset("Power", data=np.array(I))
-            telescope_group.attrs['Date'] = date_str
+            subgroup.create_dataset("Power", data=np.array(I))
+            subgroup.attrs['Date'] = date_str
 
-        plt.close()
+    plt.close()
 
     return I
 
@@ -438,10 +438,13 @@ def process_data(events, telescope):
             dt_gains = dt # dateutil.parser.parse("2023-06-27")
             if telescope == 'gbo':
                 # cal_files = glob.glob('/arc/projects/chime_frb/bandersen/gbo/gains/*{}*h5'.format(dt_gains.strftime("%Y%m%d")))
-                cal_files = glob.glob('/arc/projects/chime_frb/knimmo/gbo/gain_temp/gain_20241121T010033.914897Z_cyga.h5') 
+                cal_files = glob.glob('/arc/projects/chime_frb/rdarlinger/gain_solutions/gain_20241118T000857.798131Z_cyga.h5') 
                 #use specific gain for gbo ^^
+                gain_d=datetime.datetime(2024, 11,18)
+                gain_date = gain_d.strftime("%Y-%m-%d")
             elif telescope == 'chime':
                 cal_files = glob.glob('/arc/projects/chime_frb/data/chime/daily_gain_solutions/hdf5_files/*{}*h5'.format(dt_gains.strftime("%Y%m%d")))
+                gain_date=dt_gains.strftime("%Y%m%d")
             else:
                 raise Exception('Telescope must be one of "gbo" or "chime" right now.')
             cal_h5 = cal_files[0]
@@ -449,7 +452,7 @@ def process_data(events, telescope):
             print("Calibration file: {}".format(cal_h5))
 
             print("Set output location for singlebeam")
-            out_file = '/arc/projects/chime_frb/rdarlinger/singlebeams/singlebeam_{0}_{1}.h5'.format(telescope, event_id)
+            out_file = '/arc/projects/chime_frb/rdarlinger/singlebeams/singlebeam_{0}_{1}_{2}.h5'.format(telescope, event_id,gain_date)
             print('Saving singlebeam to', out_file)
 
             if os.path.exists(out_file):
@@ -543,7 +546,7 @@ def process_data(events, telescope):
                 dt, singlebeam, telescope, src_name, 
                 downsample_factor_ms = 0.1, DM = None, 
                 save_dir = save_dir, pulsar_df = pulsar_df,
-                snr = snr,
+                snr = snr, gain=gain_date
             )
 
             date_str = dt.strftime("%Y-%m-%d")
@@ -626,7 +629,7 @@ def SNR(event_id, file_path, power_path, telescope1="chime", telescope2="gbo", p
     else:
         df.to_csv(file_path, mode='w', header=True, index=False)
     telescope=telescope2
-    with h5py.File('power.h5', 'r') as f: #grabbing the previously saved power data from _waterfall_pulsar2 function
+    with h5py.File(power_path, 'r') as f: #grabbing the previously saved power data from _waterfall_pulsar2 function
         if str(event_id) in f:
             event=f[str(event_id)]
             for key in event:
@@ -698,7 +701,7 @@ def plot_SNR(snr_file, out_file):
     # Set labels and title
     plt.xlabel('Date')
     plt.ylabel('GBO/CHIME All SNR')
-    plt.title('Gain Stability of GBO Gain: 2024-11-21')
+    plt.title('Offline GBO Gains')
 
     # Rotate the x-axis labels to make them more readable
     plt.xticks(rotation=60)
@@ -916,7 +919,7 @@ def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gain
                 print('Flagging bad inputs:', badinps)
                 flagged_ids = badinps
             else:
-                flagged_ids = [15,16,21,22,23,24,30,31,32,36,37,38,43,
+                flagged_ids =  [15,16,21,22,23,24,30,31,32,36,37,38,43,
                   44,63,64,67,68,70,71,78,79,80,84,85,88,89,93,94,
                   112,113,116,117,130,131,145,146,
                   153,154,155,156,157,158,159,165,
@@ -969,13 +972,13 @@ def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gain
             print(gain.shape)
             
             datetime_obj = unix_to_datetime(unix_times[i]).astimezone(timezone.utc)
+            filepath=os.path.join(plot_output_dir, f"gain_{datetime_obj}.png")
             plt.imshow(np.abs(gain), norm=LogNorm(vmin=1,vmax=10))
             plt.title(f"Gain for {datetime_obj}")
             plt.xlabel("Input")
             plt.ylabel("Frequency")
             plt.colorbar()
-            filepath=os.path.join(plot_output_dir, f"gain_{datetime_obj}.png"
-            plt.savefig(f"/arc/projects/chime_frb/rdarlinger/gain_solutions/plots/gain_{unix_times[i]}.png")
+            plt.savefig(filepath)
         else: 
             print(filepath, ' already exists!')
 
@@ -1729,3 +1732,168 @@ def find_transits(src, latitude_deg, longitude_deg, elevation_m=0,
         current_time += step
 
     return transits
+
+
+def SNR_gain_diff(event_id, file_path, power_path, telescope1="gbo", telescope2="chime", pulse_start=None, pulse_end=None):
+    '''Finds SNR values for two telescopes and saves the values
+    Parameters
+    --------
+    event_id: float
+        event id of event to calculate the SNR values for
+    file_path: str
+        file path of csv to save SNR values to
+    power_path: str
+        file path of power.h5 file saved from process_data function
+    telescope1: str
+        name of telescope to calculate SNR values for first
+    telescope2: str
+        name of telescope to calculate SNR values for second, must be outrigger to work with plot function
+    pulse_start: float
+        specified bin to start the pulse if needed
+    pulse_end: float
+        specified bin to end the pulse if needed
+    
+    Returns
+    -------
+    simple_snr: float
+        snr of the first telescope given
+    simple_snrg: float
+        snr of the second telsecope given
+        
+    Saves
+    -------
+    file: .csv file
+        File at specified file path with SNR data'''
+    telescope=telescope1
+    with h5py.File(power_path, 'r') as f: #grabbing the previously saved power data from _waterfall_pulsar2 function
+        print("Top-level keys in file:", list(f.keys()))
+        if str(event_id) in f:
+            event=f[str(event_id)]
+            print("Found event:", str(event_id))
+            if telescope in event:
+                telescope_group = event[telescope]
+                print("Checking telescope:", telescope)
+                print("Gain keys:", list(telescope_group.keys()))
+                for gain_key in telescope_group:  # Loop over gain groups
+                    gain_group = telescope_group[gain_key]
+                    power1 = gain_group['Power'][:]
+                    date = gain_key  # assuming gain_key is a date-like string
+                    power = np.nansum(power1, axis=0)
+                    noise = np.mean(power[50:100])
+                    mad_off_pulses = median_abs_deviation(power[50:100])
+                    power=(power-noise)/mad_off_pulses
+                    peak_bin = np.argmax(power)
+                    print(peak_bin)
+                    peak = power[peak_bin]
+                    if pulse_start == None and pulse_end == None:
+                        pulse_start = np.where(power[:peak_bin] < 0.1 * peak)[0][-1]
+                        pulse_end = np.where(power[peak_bin:] < 0.1 * peak)[0][0] +peak_bin
+                    plt.plot(power)
+                    plt.axvline(pulse_start, color="red")
+                    plt.axvline(pulse_end, color="red")
+                    plt.title("After Standardize")
+                    plt.show()
+                    print(pulse_start,pulse_end)
+
+
+                    simple_snr = np.nansum(power[pulse_start:pulse_end],axis=-1)
+                    #signal=np.max(power)
+                    print(simple_snr, np.mean(power[50:100]), median_abs_deviation(power[50:100]))
+
+
+                    data = {'ID': [event_id], 'Telescope': [telescope], "SNR": [simple_snr], "Date": [date], "Peak": [peak]}
+
+                    df = pd.DataFrame(data)
+
+                    if os.path.exists(file_path):
+                        df.to_csv(file_path, mode='a', header=False, index=False)
+                    else:
+                        df.to_csv(file_path, mode='w', header=True, index=False)
+    telescope=telescope2
+    with h5py.File(power_path, 'r') as f: #grabbing the previously saved power data from _waterfall_pulsar2 function
+        if str(event_id) in f:
+            print("Found event:", str(event_id))
+            event=f[str(event_id)]
+            if telescope in event:
+                print("Checking telescope:", telescope)
+                telescope_group = event[telescope]
+                print("Gain keys:", list(telescope_group.keys()))
+                for gain_key in telescope_group:  # Loop over gain groups
+                    gain_group = telescope_group[gain_key]
+                    power1c=event[telescope]['Power'][:]
+                    datec=event[telescope].attrs['Date']
+                    powerc=np.nansum(power1c, axis=0)
+                    noisec = np.mean(powerc[50:100])
+                    mad_off_pulsesc = median_abs_deviation(powerc[50:100]) #np.nanstd(off_pulses, axis = 0)
+                    powerc=(powerc-noisec)/mad_off_pulsesc
+                    peak_binc = np.argmax(powerc)
+                    print(peak_binc)
+                    peakc = powerc[peak_binc]
+                    plt.plot(powerc)
+                    plt.axvline(pulse_start-31, color="red") #31 is so it lines up with pulse since it is not 1 to 1 from CHIME
+                    plt.axvline(pulse_end-31, color="red")
+                    plt.title("After Standardize")
+                    plt.show()
+                    print(pulse_start-31,pulse_end-31)
+
+
+                    simple_snrc = np.nansum(powerc[pulse_start-31:pulse_end-31],axis=-1)
+                    #signal=np.max(power)
+                    print(simple_snrc, np.mean(powerc[50:100]), median_abs_deviation(powerc[50:100]))
+
+
+                    datac = {'ID': [event_id], 'Telescope': [telescope], "SNR": [simple_snrc], "Date": [datec], "Peak": [peakc]}
+
+                    df = pd.DataFrame(datac)
+
+                    if os.path.exists(file_path):
+                        df.to_csv(file_path, mode='a', header=False, index=False)
+                    else:
+                        df.to_csv(file_path, mode='w', header=True, index=False)
+    
+    return    
+
+def plot_SNR_gain_diff(snr_file, out_file):
+    '''Plot the SNR ratio of two telescopes
+    
+    Parameters
+    ------
+    snr_file: str
+        file path of file created in SNR function with SNR data
+    out_file: str
+        file path to save the SNR plot to
+    
+    Saves
+    ------
+    Plot: .png file
+        Saves plot of snr ratios at specified out path
+    '''
+    # Read the CSV file
+    df = pd.read_csv(snr_file)
+
+    # Sort the dataframe to ensure pairs are adjacent and consistent
+    df = df.sort_values(by=["ID", "Telescope"])
+
+    # Get the SNR values as an array
+    snr = df["SNR"].values
+
+    # Compute successive ratios: telescope / chime
+    r = [snr[i] / snr[4] for i in range(0, len(snr))]
+    dates=pd.to_datetime(df["Date"])
+    dates=dates.values[:4]
+    print(dates)
+    plt.plot(dates, r, marker='o', linestyle='-', color='b')
+
+    # Set labels and title
+    plt.xlabel('Date')
+    plt.ylabel('GBO/CHIME All SNR')
+    plt.title('Offline GBO Gains All on 9/20 Pulse')
+
+    # Rotate the x-axis labels to make them more readable
+    plt.xticks(rotation=60)
+    plt.xticks(dates) 
+
+    plt.tight_layout()  # Ensures everything fits without overlap
+    plt.savefig(out_file)
+    plt.show()
+    return
