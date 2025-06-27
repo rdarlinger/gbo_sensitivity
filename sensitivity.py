@@ -20,6 +20,7 @@ import datetime
 import numpy as np
 import warnings
 import h5py
+import csv
 
 import matplotlib.pylab as pylab
 params = {'axes.labelsize':20,
@@ -44,8 +45,6 @@ from baseband_analysis.pipelines import outrigger_beamform
 from baseband_analysis.core import calibration as cal
 import baseband_analysis.core.bbdata as bbdata
 import json
-import datetime
-import h5py
 from scipy.stats import median_abs_deviation
 from ch_util.tools import Blank
 from IPython.display import Image
@@ -60,12 +59,9 @@ from astropy.time import Time
 import bisect
 import os
 import subprocess
-import pytz
 
 from astropy.coordinates import EarthLocation
-import astropy.units as u
 from scipy.optimize import minimize_scalar
-from matplotlib.colors import LogNorm
 
 
 # Load in pulsar dataframe for pulsar beamforming
@@ -143,7 +139,7 @@ def waterfall_pulsar2(
     date_str = "{0}-{1:02d}-{2:02d}".format(date.year, date.month, date.day)
 
     print("Plot!")
-    fig = _waterfall_pulsar2(
+    fig, bad_freq = _waterfall_pulsar2(
         power = power,
         event_id = event_id,
         downsample_factor_ms = downsample_factor_ms,
@@ -154,7 +150,8 @@ def waterfall_pulsar2(
         save_dir = save_dir,
         snr = snr, gain=gain
     )
-    return fig
+    plt.close()
+    return fig, bad_freq
 
 def _waterfall_pulsar2(
     power,
@@ -300,39 +297,55 @@ def _waterfall_pulsar2(
         print("Saving plot to: {}".format("{}/{}_{}_{}_{}_waterfall.png".format(save_dir, event_id, src_name, date_str, telescope)))
         plt.savefig("{}/{}_{}_{}_{}_waterfall.png".format(save_dir, event_id, src_name, date_str, telescope), dpi=300, bbox_inches="tight")
 
-        file_path="power_9_20.h5"
+        file_path="power.h5"
         with h5py.File(file_path, 'a') as f:
             # Ensure event group and telescope group exist (create if not)
             event_group = f.require_group(str(event_id))
             telescope_group = event_group.require_group(telescope)
-            subgroup = telescope_group.require_group(gain)
-            # Overwrite Power dataset if it exists
-            if "Power" in subgroup:
-                del subgroup["Power"]
+            if gain is not None:
+                subgroup = telescope_group.require_group(gain)
+                # Overwrite Power dataset if it exists
+                if "Power" in subgroup:
+                    del subgroup["Power"]
 
-            # Write new Power dataset and Date attribute
-            subgroup.create_dataset("Power", data=np.array(I))
-            subgroup.attrs['Date'] = date_str
+                # Write new Power dataset and Date attribute
+                subgroup.create_dataset("Power", data=np.array(I))
+                subgroup.attrs['Date'] = date_str
+            else: 
+                if "Power" in telescope_group:
+                    del telescope_group["Power"]
+                
+                telescope_group.create_dataset("Power", data=np.array(I))
+                telescope_group.attrs["Date"] = date_str
+    return fig0, len(channels_rfi)
 
-    plt.close()
-
-    return I
-
-def process_data(events, telescope):
+def process_data(events, telescope, gain=None, out_file=None, save_dir=None, DMs=None, source_info=None):
     '''Takes event ids and a telescope to beamform a pulsar and save the singlebeams, waterfalls
     and power
     
     Parameters
     -------
     events: ndarray
-        array of evenet ids to beform
+        array of event ids to beform
     telescope: str
         name of telescopoe i.e. gbo or chime
+    gain: str
+        location of gain .h5 file to use
+    out_file: str
+        location to put the singlebeam
+    save_dir: str
+        location to put the waterfall plot
+    DMs: ndarray
+        array of DMs corresponding to event ids
+    source_info: list
+        list of source info in the order [src_name, src_ra, src_dec]
         
     Returns
     ------
-    dates: ndarray
-        Dates of the data
+    bad_freq: np.float
+        number of masked frequency channels in final waterfall
+    bad_input: np.float
+        number of masked input in gains file
         
     Saves
     ------
@@ -349,13 +362,14 @@ def process_data(events, telescope):
     source_names = []
     event_ids_filt = []
     dates = []
-    for event_id in events:
-        if len(str(event_id)) == 10:
-            continue
+    for idx, event_id in enumerate(events):
         print("Getting information for {}".format(event_id))
         event = master.events.get_event(event_id, full_header=True)
         source_name = event['event_best_data']['source_category_name']
-        dm = event['event_best_data']['dm']
+        if DMs == None:
+            dm = event['event_best_data']['dm']
+        else:
+            dm = DMs[idx]
         event_snrs = []
         for beam in event['event_beam_header']:
             event_snrs.append(beam['snr'])
@@ -363,14 +377,13 @@ def process_data(events, telescope):
         dt = datetime.datetime.strptime(event['event_best_data']['timestamp_utc'].split('.')[0], "%Y%m%d%H%M%S")
         date = dt.strftime("%Y-%m-%d")
 
-        # Save only pulsars
-        if 'B' in source_name:
-            print("{}, {}, {}, {}".format(source_name, dm, snr, date))
-            snrs.append(snr)
-            dms.append(dm)
-            source_names.append(source_name)
-            event_ids_filt.append(event_id)
-            dates.append(date)
+        # Save all events
+        print("{}, {}, {}, {}".format(source_name, dm, snr, date))
+        snrs.append(snr)
+        dms.append(dm)
+        source_names.append(source_name)
+        event_ids_filt.append(event_id)
+        dates.append(date)
     snrs = np.array(snrs)
     dms = np.array(dms)
     source_names = np.array(source_names)
@@ -411,9 +424,14 @@ def process_data(events, telescope):
             print("Location of data: {}".format(pattern))
 
             print("Grab location of the source")
-            src_info = pulsar_df[pulsar_df['name']==src_name]
-            src_ra = src_info["ra"].values[0]
-            src_dec = src_info["dec"].values[0]
+            if source_info == None:
+                src_info = pulsar_df[pulsar_df['name']==src_name]
+                src_ra = src_info["ra"].values[0]
+                src_dec = src_info["dec"].values[0]
+            else: 
+                src_info= source_info[0]
+                src_ra= source_info[1]
+                src_dec= source_info[2]
             coord = SkyCoord(
                 ra = src_ra, 
                 dec = src_dec, 
@@ -428,25 +446,41 @@ def process_data(events, telescope):
             dt_gains = dt # dateutil.parser.parse("2023-06-27")
             if telescope == 'gbo':
                 # cal_files = glob.glob('/arc/projects/chime_frb/bandersen/gbo/gains/*{}*h5'.format(dt_gains.strftime("%Y%m%d")))
-                cal_files = glob.glob('/arc/projects/chime_frb/rdarlinger/gain_solutions/gain_20241118T000857.798131Z_cyga.h5') 
+                if gain==None:
+                    cal_files = glob.glob('/arc/projects/chime_frb/rdarlinger/gain_solutions/gain_20241118T000857.798131Z_cyga.h5') 
+                    cal_h5 = cal_files[0]
+                elif isinstance(gain, str):
+                    cal_h5 = gain  
+                elif isinstance(gain, list) and len(gain) > 0:
+                    cal_h5 = gain[0]
+                gains = cal.read_gains(cal_h5)
+                removed_mask = np.all(gains == 0, axis=0) 
+                bad_input = np.sum(removed_mask)
                 #use specific gain for gbo ^^
-                gain_d=datetime.datetime(2024, 11,18)
-                gain_date = gain_d.strftime("%Y-%m-%d")
+                gain_date = dt_gains.strftime("%Y-%m-%d")
             elif telescope == 'chime':
                 cal_files = glob.glob('/arc/projects/chime_frb/data/chime/daily_gain_solutions/hdf5_files/*{}*h5'.format(dt_gains.strftime("%Y%m%d")))
+                cal_h5 = cal_files[0]
                 gain_date=dt_gains.strftime("%Y%m%d")
+                gains = cal.read_gains(cal_h5)
+                removed_mask = np.all(gains == 0, axis=0) 
+                bad_input = np.sum(removed_mask)
             else:
                 raise Exception('Telescope must be one of "gbo" or "chime" right now.')
-            cal_h5 = cal_files[0]
             gain = cal_h5.split('/')[-1].split('.h5')[0]
             print("Calibration file: {}".format(cal_h5))
 
             print("Set output location for singlebeam")
-            out_file = '/arc/projects/chime_frb/rdarlinger/singlebeams/singlebeam_{0}_{1}_{2}.h5'.format(telescope, event_id,gain_date)
+            if out_file ==None:
+                out_file = '/arc/projects/chime_frb/rdarlinger/singlebeams/singlebeam_{0}_{1}_{2}.h5'.format(telescope, event_id,gain_date)
+            else:
+                out_file=out_file+'singlebeam_{0}_{1}_{2}.h5'.format(telescope, event_id,gain_date)
             print('Saving singlebeam to', out_file)
+    
 
             if os.path.exists(out_file):
                 singlebeam=out_file
+                
             else:
     #         ################## Beamforming #####################
 
@@ -473,9 +507,6 @@ def process_data(events, telescope):
                 # with open('./gbo_256ants_chutil_23.6.0+1.gf8c7162.pkl', 'rb') as file:
                 #     inputs = list(pickle.load(file))
 
-                # Load gains
-                gains = cal.read_gains(cal_h5)
-
                 datas = []
                 for ii, files in enumerate(chunked(filenames, 8)):
                     print(
@@ -489,7 +520,13 @@ def process_data(events, telescope):
 
                     if telescope == 'gbo':
                         # flagged_ids = [10, 13, 15, 21, 26, 38, 40, 41, 56, 63, 67, 74, 78, 84, 86, 104, 108, 111, 118, 120, 123, 127, 130, 138, 147, 154, 155, 156, 158, 165, 168, 171, 175, 180, 186, 199, 201, 232, 240, 243, 245, 248, 249, 252, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220]
-                        flagged_ids = [10, 13, 15, 21, 26, 38, 40, 41, 56, 63, 67, 74, 78, 84, 86, 104, 108, 111, 118, 120, 123, 127, 130, 138, 147, 154, 155, 156, 158, 165, 168, 171, 175, 180, 186, 199, 201, 232, 240, 243, 245, 248, 249, 252]
+                        flagged_ids = [15,16,21,22,23,24,30,31,32,36,37,38,43,
+                          44,63,64,67,68,70,71,78,79,80,84,85,88,89,93,94,
+                          112,113,116,117,130,131,145,146,
+                          153,154,155,156,157,158,159,165,
+                          166,180,181,186,187,201,202,214,
+                          215,216,240,241,243,246,247
+                          ]
                         # flagged_ids = np.arange(254)
                         for iid in flagged_ids:
                             antenna = Blank(id=inputs[iid].id, input_sn=inputs[iid].input_sn, corr=inputs[iid].corr)
@@ -506,7 +543,8 @@ def process_data(events, telescope):
                         telescope_rotation=telescope_rotation_angle,
                         static_delays=False,
                     )
-                    del data["baseband"]
+                    if "baseband" in data:
+                        del data["baseband"]
                     datas.append(data)
                     print(
                         f'{datetime.datetime.now().strftime("%Y%m%dT%H%M%S")}: We have processed {len(datas)} groups so far!'
@@ -528,26 +566,33 @@ def process_data(events, telescope):
 
 
             print("Specify save directory")
-            save_dir = '/arc/projects/chime_frb/rdarlinger/waterfalls'
+            if save_dir == None:
+                save_dir = '/arc/projects/chime_frb/rdarlinger/waterfalls'
+            else:
+                save_dir=save_dir
 
             # Create figure
             print(dt, singlebeam, telescope, src_name)
-            intensity = waterfall_pulsar2(
+            fig, bad_freq = waterfall_pulsar2(
                 dt, singlebeam, telescope, src_name, 
-                downsample_factor_ms = 0.1, DM = None, 
+                downsample_factor_ms = 0.1, DM = dm, 
                 save_dir = save_dir, pulsar_df = pulsar_df,
-                snr = snr, gain=gain_date
+                snr = snr, gain=None
             )
 
             date_str = dt.strftime("%Y-%m-%d")
             fn = "{}/{}_{}_{}_{}_waterfall.png".format(save_dir, event_id, src_name, date_str, telescope)
             fns.append(fn)
         except Exception as e:
-            print(e)
+            print(f"Error with event_id {event_id}: {e}")
             exceptions.append(e)
             exception_ids.append(event_id)
+
+            # Define default values so the function doesn't crash
+            bad_freq = []
+            bad_input = 0
             continue
-    return dates 
+    return bad_freq, bad_input
     
 def SNR(event_id, file_path, power_path, telescope1="chime", telescope2="gbo", pulse_start=None, pulse_end=None):
     '''Finds SNR values for two telescopes and saves the values
@@ -592,7 +637,7 @@ def SNR(event_id, file_path, power_path, telescope1="chime", telescope2="gbo", p
     mad_off_pulses = median_abs_deviation(power[50:100]) #np.nanstd(off_pulses, axis = 0)
     power=(power-noise)/mad_off_pulses
     peak_bin = np.argmax(power)
-    print(peak_bin)
+    print("Peak bin is", peak_bin)
     peak = power[peak_bin]
     if pulse_start == None and pulse_end == None:
         pulse_start = np.where(power[:peak_bin] < 0.1 * peak)[0][-1]
@@ -602,12 +647,12 @@ def SNR(event_id, file_path, power_path, telescope1="chime", telescope2="gbo", p
     plt.axvline(pulse_end, color="red")
     plt.title("After Standardize")
     plt.show()
-    print(pulse_start,pulse_end)
+    print("Start:",pulse_start, "End:",pulse_end)
         
     
     simple_snr = np.nansum(power[pulse_start:pulse_end],axis=-1)
     #signal=np.max(power)
-    print(simple_snr, np.mean(power[50:100]), median_abs_deviation(power[50:100]))
+    print("Simple snr:",simple_snr, "Mean of off pulse:",np.mean(power[50:100]), "Deviation of off pulse region:", median_abs_deviation(power[50:100]))
     
     
     data = {'ID': [event_id], 'Telescope': [telescope], "SNR": [simple_snr], "Date": [date], "Peak": [peak]}
@@ -631,19 +676,19 @@ def SNR(event_id, file_path, power_path, telescope1="chime", telescope2="gbo", p
     mad_off_pulsesg = median_abs_deviation(powerg[50:100]) #np.nanstd(off_pulses, axis = 0)
     powerg=(powerg-noiseg)/mad_off_pulsesg
     peak_bing = np.argmax(powerg)
-    print(peak_bing)
+    print("Peak bin, GBO:",peak_bing)
     peakg = powerg[peak_bing]
     plt.plot(powerg)
     plt.axvline(pulse_start+31, color="red") #31 is so it lines up with pulse since it is not 1 to 1 from CHIME
     plt.axvline(pulse_end+31, color="red")
     plt.title("After Standardize")
     plt.show()
-    print(pulse_start+31,pulse_end+31)
+    print("Pulse start:",pulse_start+31, "Pulse end:", pulse_end+31)
         
     
     simple_snrg = np.nansum(powerg[pulse_start+31:pulse_end+31],axis=-1)
     #signal=np.max(power)
-    print(simple_snrg, np.mean(powerg[50:100]), median_abs_deviation(powerg[50:100]))
+    print("Simple SNR GBO:",simple_snrg, "Mean of off pusles GBO:",np.mean(powerg[50:100]), "Deviation of off pulses GBO:", median_abs_deviation(powerg[50:100]))
     
     
     datag = {'ID': [event_id], 'Telescope': [telescope], "SNR": [simple_snrg], "Date": [dateg], "Peak": [peakg]}
@@ -685,7 +730,7 @@ def plot_SNR(snr_file, out_file):
     r = [snr[i] / snr[i-1] for i in range(1, len(snr), 2)]
     dates=pd.to_datetime(df["Date"])
     dates=dates.values[::2]
-    print(dates)
+    print("Dates:", dates)
     plt.plot(dates, r, marker='o', linestyle='-', color='b')
 
     # Set labels and title
@@ -764,7 +809,7 @@ def just_toa(singlebeam, DM=None):
             DM = frb_master_event['measured_parameters'][-1]['dm']
     print("DM={0:.2f} pc/cc...".format(DM))
     toa=get_TOA(data, DM=DM) #In unix time
-    print(toa)
+    print("TOA:", toa)
     return toa
 
 def _get_src_transit_from_hdf5(path_to_hdf5, src, obs = chime):
@@ -857,7 +902,7 @@ def _get_connected_inputs(unix_timestamp, correlator='FCG',inputmap = None):
 def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gains_output_dir = '/arc/projects/chime_frb/rdarlinger/gain_solutions/', 
                       correlator = 'FCG', obs=gbo, badinps=None,input_pkl_file='/arc/projects/chime_frb/rdarlinger/gboinputs_correct.pkl', 
                       plot_output_dir="/arc/projects/chime_frb/rdarlinger/gain_solutions/plots/",
-                      median=None,percent_of_band=0.1,max_dev=10.):
+                      median=None,percent_of_band=0.1,max_dev=5.):
     if src_str == "cyga":
         src = CygA
     elif src_str == "casa":
@@ -872,9 +917,9 @@ def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gain
     if transit_times ==None:
         transit_times = _get_src_transit_from_hdf5(path_to_h5_files, src)
     
-    print(transit_times)
+    print("Transit times:",transit_times)
     filenames, file_idxs, unix_times, transit_idxs = _find_hdf5_from_unix(path_to_h5_files, transit_times)
-    print(filenames)
+    print("Filenames:", filenames)
 
     for i, f in enumerate(filenames):
         _data = h5py.File(path_to_h5_files+f)
@@ -906,7 +951,6 @@ def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gain
             
             
             if badinps is not None:
-                print('Flagging bad inputs:', badinps)
                 flagged_ids = badinps
             else:
                 flagged_ids =  [15,16,21,22,23,24,30,31,32,36,37,38,43,
@@ -924,23 +968,26 @@ def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gain
                 print('Looking for bad channels...')
                 flagged_inputs_new = filter_bad_inputs(gains,median,percent_of_band=percent_of_band,max_dev=max_dev)
                 if len(flagged_inputs_new) > 0: 
-                    print('Found bad input(s):', flagged_inputs_new)
                     
                     flagged_ids = list(flagged_inputs_new) + flagged_ids
-                    print('Recalculating gains, final list of bad inputs:', flagged_ids)
                     gains, weights, gain_err = _solve_gain_wrapper(_vis, _inputmap, _connected_inps,_transit_time,_freqs,src, obs, flagged_ids,transit_idxs,i)
-
+                    num_flagged_ids=len(flagged_ids)
+                    print("Number of bad inputs:", num_flagged_ids)
+                else:
+                    num_flagged_ids=len(flagged_ids)
+                    print("Number of bad inputs:", num_flagged_ids)
             else: 
                 print(f'Flagging any inputs with gains that exceed {max_dev} medians over {percent_of_band}')
                 median = get_simple_median(gains)
                 flagged_inputs_new = filter_bad_inputs(gains,median,percent_of_band=percent_of_band,max_dev=max_dev)
                 if len(flagged_inputs_new) > 0: 
-                    print('Found bad input(s):', flagged_inputs_new)
                     flagged_ids = list(flagged_inputs_new) + flagged_ids
-                    print('Recalculating gains, final list of bad inputs:', flagged_ids)
-                    print("Number of bad inputs:", len(flagged_ids))
+                    num_flagged_ids=len(flagged_ids)
+                    print("Number of bad inputs:", num_flagged_ids)
                     gains, weights, gain_err = _solve_gain_wrapper(_vis, _inputmap, _connected_inps,_transit_time,_freqs,src, obs, flagged_ids,transit_idxs,i)
-
+                else:
+                    num_flagged_ids=len(flagged_ids)
+                    print("Number of bad inputs:", num_flagged_ids)
             
             print("Beginning writeout process...")
             if gains_output_dir is not None:
@@ -959,22 +1006,21 @@ def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gain
                     h5pyfile.create_dataset("flagged_ids", data =flagged_ids)
             file=h5py.File(filepath, "r")
             gain=np.asarray(file['gain'])
-            print(gain.shape)
             
             datetime_obj = unix_to_datetime(unix_times[i]).astimezone(timezone.utc)
-            filepath=os.path.join(plot_output_dir, f"gain_{datetime_obj}.png")
+            filepath_i=os.path.join(plot_output_dir, f"gain_{datetime_obj}.png")
             plt.imshow(np.abs(gain), norm=LogNorm(vmin=1,vmax=10))
             plt.title(f"Gain for {datetime_obj}")
             plt.xlabel("Input")
             plt.ylabel("Frequency")
             plt.colorbar()
-            plt.savefig(filepath)
+            plt.savefig(filepath_i)
         else: 
             print(filepath, ' already exists!')
 
 
 
-    return
+    return num_flagged_ids, filepath
 
 def filter_bad_inputs(gains, median, percent_of_band=0.1, max_dev = 5.): 
     '''
@@ -1037,9 +1083,6 @@ def _solve_gain_wrapper(_vis, _inputmap, _connected_inps,_transit_time,_freqs,sr
             for inp in _inputmap
             if (inp.id in _connected_inps and inp.pol == "S")
         ]
-
-    print("Good inputs", _good_inputs_x, _good_inputs_y)
-    print('Removing flagged inputs: {0}'.format(flagged_ids))
     # Remove flagged inputs
     for ch_id in flagged_ids:
         if ch_id in _good_inputs_x:
@@ -1600,7 +1643,7 @@ def find_files(file, file_path, toa_from_singlebeam, src_str="cyga", telescope="
             file_id_float = float(name.split('_')[0])
             file_data.append((file_id_float, name))
     file_data.sort(key=lambda x: x[0])
-    file_path="/arc/projects/chime_frb/rdarlinger/"+file_path+"_"+common_path+".txt"
+    file_path=file_path+"_"+common_path+".txt"
 
     # Split into separate lists (now aligned)
     file_ids = [fid for fid, _ in file_data]
