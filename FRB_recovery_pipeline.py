@@ -237,7 +237,7 @@ def frb_rerun_pipeline(events, telescope="gbo"):
         print("Number of flagged frequencies:", flagged_freq, "Number of flagged inputs:", flagged_input)
         flagged_freq_chime, flagged_input_chime= process_data([event_id], "chime", out_file=path, save_dir=path, DMs=[DM], source_info= [source_name, ra, dec])
         print("Number of flagged frequencies at CHIME:", flagged_freq_chime, "Number of flagged inputs at CHIME:", flagged_input_chime)
-        snrc, snrg=SNR(event_id, f"SNR_{event_id}.csv", "/arc/projects/chime_frb/rdarlinger/power.h5")
+        snrc, snrg=SNR(event_id, f"{path}SNR_{event_id}.csv", "/arc/projects/chime_frb/rdarlinger/power.h5")
         event_data = {
             "event_id": event_id,
             "timestamp": date,
@@ -258,4 +258,4 @@ def frb_rerun_pipeline(events, telescope="gbo"):
     
     
 if __name__ == "__main__":
-    frb_rerun_pipeline([350136130, 358105468, 366503638, 378287810, 383577603, 388211354, 397220423, 412590956, 424530814, 432660091 ])
+    frb_rerun_pipeline([412590956, 424530814, 432660091 ]) #350136130, 358105468, 366503638, 378287810, 383577603, 388211354, 397220423,
