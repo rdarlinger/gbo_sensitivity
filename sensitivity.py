@@ -227,6 +227,7 @@ def _waterfall_pulsar2(
     print("Remove RFI...")
     channels_rfi = get_RFI_channels(I, diagnostic_plots=False, thres_mean=5, thres_std=3)
     I[channels_rfi, :] = np.nan
+    num_nan_channels = np.sum(np.all(np.isnan(I), axis=1))
     
     vmin,vmax=np.nanpercentile(I, [5,95])
     
@@ -317,7 +318,7 @@ def _waterfall_pulsar2(
                 
                 telescope_group.create_dataset("Power", data=np.array(I))
                 telescope_group.attrs["Date"] = date_str
-    return fig0, len(channels_rfi)
+    return fig0, num_nan_channels
 
 def process_data(events, telescope, gain=None, out_file=None, save_dir=None, DMs=None, source_info=None):
     '''Takes event ids and a telescope to beamform a pulsar and save the singlebeams, waterfalls
@@ -460,6 +461,13 @@ def process_data(events, telescope, gain=None, out_file=None, save_dir=None, DMs
                 gain_date = dt_gains.strftime("%Y-%m-%d")
             elif telescope == 'chime':
                 cal_files = glob.glob('/arc/projects/chime_frb/data/chime/daily_gain_solutions/hdf5_files/*{}*h5'.format(dt_gains.strftime("%Y%m%d")))
+                if not cal_files:
+                    dt_gains_next = dt_gains + timedelta(days=1)
+                    gain_date = dt_gains_next.strftime("%Y%m%d")
+                    cal_files = glob.glob(f"/arc/projects/chime_frb/data/chime/daily_gain_solutions/hdf5_files/*{gain_date}*h5")
+                    if not cal_files:
+                        raise FileNotFoundError(f"No gain file found for {dt_gains.strftime('%Y-%m-%d')} or {dt_gains_next.strftime('%Y-%m-%d')}.")
+                        
                 cal_h5 = cal_files[0]
                 gain_date=dt_gains.strftime("%Y%m%d")
                 gains = cal.read_gains(cal_h5)
@@ -490,6 +498,18 @@ def process_data(events, telescope, gain=None, out_file=None, save_dir=None, DMs
                 if len(filenames) == 0:
                     raise OSError(f"Looked in {pattern} but raw baseband data not found.")
                 print(f"Found Raw BBData ({len(filenames)}) :{filenames[0:3]}")
+                count=0
+                new_filenames = []
+                for filename in filenames: #remove file if it does not have baseband data
+                    with h5py.File(filename, "r") as f:
+                        if "baseband" in f:
+                            new_filenames.append(filename)  # keep this file
+                        else:
+                            os.remove(filename)
+                            count += 1
+                print("Number of files without baseband:", count)
+                filenames = new_filenames
+                
                 first_data = BBData.from_acq_h5(filenames[0])
 
                 date_unix = first_data["time0"]["ctime"][0]
@@ -929,7 +949,10 @@ def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gain
 
         filename = unix_to_gain_name(_transit_time[0], src.names)
         filepath = os.path.join(gains_output_dir, filename)
-        
+        if os.path.isfile(filepath):
+            cmd= f"rm {filepath}"
+            subprocess.run(cmd, shell=True, check=True)
+            
         if not os.path.isfile(filepath):
             print('Calculating gains for {0} transit at unix time {1}, {2}'.format(src.names, unix_times[i], filepath))
             _freqs = _data['index_map']['freq']
@@ -1015,8 +1038,6 @@ def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gain
             plt.ylabel("Frequency")
             plt.colorbar()
             plt.savefig(filepath_i)
-        else: 
-            print(filepath, ' already exists!')
 
 
 
