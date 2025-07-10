@@ -653,8 +653,8 @@ def SNR(event_id, file_path, power_path, telescope1="chime", telescope2="gbo", p
                     power1=event[telescope]['Power'][:]
                     date=event[telescope].attrs['Date']
     power=np.nansum(power1, axis=0)
-    noise = np.mean(power[50:100])
-    mad_off_pulses = median_abs_deviation(power[50:100]) #np.nanstd(off_pulses, axis = 0)
+    noise = np.mean(power[50:200])
+    mad_off_pulses = median_abs_deviation(power[50:200]) #np.nanstd(off_pulses, axis = 0)
     power=(power-noise)/mad_off_pulses
     peak_bin = np.argmax(power)
     print("Peak bin is", peak_bin)
@@ -672,7 +672,7 @@ def SNR(event_id, file_path, power_path, telescope1="chime", telescope2="gbo", p
     
     simple_snr = np.nansum(power[pulse_start:pulse_end],axis=-1)
     #signal=np.max(power)
-    print("Simple snr:",simple_snr, "Mean of off pulse:",np.mean(power[50:100]), "Deviation of off pulse region:", median_abs_deviation(power[50:100]))
+    print("Simple snr:",simple_snr, "Mean of off pulse:",np.mean(power[50:200]), "Deviation of off pulse region:", median_abs_deviation(power[50:200]))
     
     
     data = {'ID': [event_id], 'Telescope': [telescope], "SNR": [simple_snr], "Date": [date], "Peak": [peak]}
@@ -692,8 +692,8 @@ def SNR(event_id, file_path, power_path, telescope1="chime", telescope2="gbo", p
                     power1g=event[telescope]['Power'][:]
                     dateg=event[telescope].attrs['Date']
     powerg=np.nansum(power1g, axis=0)
-    noiseg = np.mean(powerg[50:100])
-    mad_off_pulsesg = median_abs_deviation(powerg[50:100]) #np.nanstd(off_pulses, axis = 0)
+    noiseg = np.mean(powerg[50:200])
+    mad_off_pulsesg = median_abs_deviation(powerg[50:200]) #np.nanstd(off_pulses, axis = 0)
     powerg=(powerg-noiseg)/mad_off_pulsesg
     peak_bing = np.argmax(powerg)
     print("Peak bin, GBO:",peak_bing)
@@ -707,8 +707,10 @@ def SNR(event_id, file_path, power_path, telescope1="chime", telescope2="gbo", p
         
     
     simple_snrg = np.nansum(powerg[pulse_start+31:pulse_end+31],axis=-1)
+    mean_in=np.mean(powerg[pulse_start+31:pulse_end+31])
+    sd_in=median_abs_deviation(powerg[pulse_start+31:pulse_end+31])
     #signal=np.max(power)
-    print("Simple SNR GBO:",simple_snrg, "Mean of off pusles GBO:",np.mean(powerg[50:100]), "Deviation of off pulses GBO:", median_abs_deviation(powerg[50:100]))
+    print("Simple SNR GBO:",simple_snrg, "Mean of off pusles GBO:",np.mean(powerg[50:200]), "Deviation of off pulses GBO:", median_abs_deviation(powerg[50:200]))
     
     
     datag = {'ID': [event_id], 'Telescope': [telescope], "SNR": [simple_snrg], "Date": [dateg], "Peak": [peakg]}
@@ -1688,27 +1690,43 @@ def find_files(file, file_path, toa_from_singlebeam, src_str="cyga", telescope="
     end_time = max(file_ids)+common_path_unix_time
     print('End time in unix time is:', end_time)
     
-    transit_times = np.asarray(chime.transit_times(src, start_time, end_time)) #For GBO observations, need to get transit time at CHIME
-    print("Transit times are:", transit_times)
-    index = bisect.bisect_left(transit_times, time_to_match)
-    file_transit_initial=transit_times[index - 1] #finds the previous transit
-    print("Closest transit time is:", file_transit_initial)
-    file_transit=file_transit_initial-common_path_unix_time #get into same units as the file_ids
-    print("Closest transit in time from container file is:", file_transit)
-    index2= bisect.bisect_left(file_ids, file_transit)
-    file=file_ids[index2-1]
-    matching_file_name = file_names[index2-1]
-    if index2 < len(file_ids):  # check bounds
+    while True:
+        transit_times = np.asarray(chime.transit_times(src, start_time, end_time))  #For GBO observations, need to get transit time at CHIME
+        print("Transit times are:", transit_times)
+
+        index = bisect.bisect_left(transit_times, time_to_match)
+        file_transit_initial = transit_times[index - 1]  # previous transit
+        print("Closest transit time is:", file_transit_initial)
+
+        file_transit = file_transit_initial - common_path_unix_time
+        print("Closest transit in time from container file is:", file_transit)
+
+        index2 = bisect.bisect_left(file_ids, file_transit)
+        file = file_ids[index2 - 1]
+        matching_file_name = file_names[index2 - 1]
+
+        # If the time gap between the file and needed transit is too large, try next day
+        if file_transit - file > 86400:
+            print("File is more than a day away from required time. Trying next day.")
+            time_to_match += 86400  # move forward one day
+            continue  # restart loop with updated time
+
+        # Otherwise, valid match found; break out
+        break
+
+    #check for second file within ±20 mins
+    file_2 = None
+    if index2 < len(file_ids):
         if file_ids[index2] - file_transit < 1200:
             file_2 = file_ids[index2]
-
     if index2 - 1 >= 0:
         if file_transit - file_ids[index2 - 1] < 1200:
             file_2 = file_ids[index2 - 2]
-    file_2_name=None
+
+    file_2_name = None
     if file_2 is not None:
         i2 = file_ids.index(file_2)
-        file_2_name =file_names[i2]
+        file_2_name = file_names[i2]
 
     # Write both filenames to file_path.txt
     with open(file_path, "a") as f:
