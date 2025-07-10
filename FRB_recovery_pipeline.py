@@ -73,7 +73,7 @@ os.environ["CHIME_FRB_REFRESH_TOKEN"] = "1950d439627e9eece51ad947d8bd057e26a7d6f
 frb_master_base_url = "http://frb-vsop.chime:8001"
 master = frb_master.FRBMaster(base_url=frb_master_base_url)
 
-def frb_rerun_pipeline(events, telescope="gbo"):
+def frb_rerun_pipeline(events, dms, telescope="gbo"):
     """
     Runs all of the funcions needed from sensitivity.py to rerun old FRB data with offline gains
 
@@ -89,7 +89,7 @@ def frb_rerun_pipeline(events, telescope="gbo"):
 
     """
     master = frb_master.FRBMaster()
-    for event_id in events:
+    for i, event_id in enumerate(events):
         path = '/arc/projects/chime_frb/rdarlinger/FRB_rerun_pipeline_results/event_{}/'.format(event_id)
         if not os.path.isdir(path):
             print("Making new dir: ", path)
@@ -98,7 +98,7 @@ def frb_rerun_pipeline(events, telescope="gbo"):
         event = master.events.get_event(event_id, full_header=True)
         source_name = f"FRB_{event_id}"
         print("Source name is", source_name)
-        dm = event['event_best_data']['dm']
+        DM = dms[i]
         event_snrs = []
         for beam in event['event_beam_header']:
             event_snrs.append(beam['snr'])
@@ -107,7 +107,7 @@ def frb_rerun_pipeline(events, telescope="gbo"):
         date = dt.strftime("%Y-%m-%d")
         print("Max S/N is", snr)
         print("Date of FRB is", date)
-        print("DM is", dm)
+        print("DM is", DM)
         singlebeam=f"/arc/projects/chime_frb/data/chime/baseband/processed/{dt.strftime('%Y/%m/%d')}/astro_{event_id}/singlebeam_{event_id}.h5"
         print("Singlebeam location is", singlebeam)
         with h5py.File(singlebeam, "r") as f:
@@ -115,87 +115,6 @@ def frb_rerun_pipeline(events, telescope="gbo"):
             ra=loc_data[0][0]
             dec=loc_data[0][1]
             print("RA is", ra, "Dec is", dec)
-        fig, bad=waterfall_pulsar2(dt, singlebeam, "chime", source_name, DM=dm, snr=snr)
-        fig.savefig(f"{path}/temp_waterfall.png") #use as the spot to look at these waterfalls before continuing with the code
-        print("Finding Structure Maximizing DM")
-        data = BBData.from_file(singlebeam)
-        # S/N max DM
-        dm_range_snr = 5
-        downsample = 1 #you'll need to change this until you have enough S/N
-        (
-                freq_id,
-                freq,
-                power,
-                _,
-                _,
-                valid_channels,
-                _,
-                DM,
-                downsampling_factor,
-        ) = get_snr(
-                data,
-                DM=None,
-                downsample=downsample,
-                fill_missing_time=None,
-                diagnostic_plots=False,
-                spectrum_lim=True,
-                return_full=True,
-                DM_range=dm_range_snr,
-                raise_missing_signal=True,
-        )
-        print(f"The S/N maximizing DM is {DM} pc/cc")
-
-        profile, start, end = get_signal_time_range(
-                power, downsampling_factor, None, False
-                )
-        downsample = get_best_downsamp(profile, downsampling_factor)
-        print(f"We will use {downsample} as downsampling factor from now on")
-
-        if downsample != downsampling_factor:
-            print(
-                "New downsampling factor != original factor. Going to re-run get_snr as a result to get a new power array"
-            )
-            (
-                freq_id,
-                freq,
-                power,
-                _,
-                _,
-                valid_channels,
-                _,
-                DM_dsamp,
-                downsampling_factor,
-            ) = get_snr(
-                data,  ### Change here to DM_dsamp as it changes if DM was none
-                DM=DM,
-                downsample=downsample,
-                fill_missing_time=None,
-                diagnostic_plots=False,
-                spectrum_lim=True,
-                return_full=True,
-                DM_range=None,
-                raise_missing_signal=True,
-            )
-    
-        # profile after any downsampling changes made
-        profile, start, end = get_signal_time_range(
-                power, downsampling_factor, None, False
-                )
-        t_res = 2.56e-6 * downsampling_factor
-
-        print("Running structure maximizing DM script")
-        plt.close("all")
-        DM_corr, DM_err = get_structure_max_DM(
-                    power[..., start:end],
-                    freq,
-                    t_res=2.56e-6 * downsampling_factor,
-                    DM_range=dm_range_snr,
-                    diagnostic_plots = True
-                )
-        os.rename('/arc/projects/chime_frb/rdarlinger/DM_Search.pdf',path+'/DM_Search.pdf')
-        os.rename('/arc/projects/chime_frb/rdarlinger/Waterfall_5sig.pdf',path+'/Waterfall_5sig.pdf')
-        DM = DM + DM_corr
-        print(f"The structure maximizing DM is {DM} pc/cc +/- {DM_err} pc/cc")
         fig2, bad=waterfall_pulsar2(dt, singlebeam, "chime", source_name, DM=DM, snr=snr)
         fig2.savefig(f"{path}/structure_maxmized_waterfall.png") #use as the spot to look at these waterfalls before continuing with the code
         print("Creating gains for day of burst")
@@ -258,4 +177,4 @@ def frb_rerun_pipeline(events, telescope="gbo"):
     
     
 if __name__ == "__main__":
-    frb_rerun_pipeline([412590956, 424530814, 432660091 ]) #350136130, 358105468, 366503638, 378287810, 383577603, 388211354, 397220423,
+    frb_rerun_pipeline([378287810, 383577603, 388211354, 397220423, 412590956, 424530814, 432660091], [426.796157134772, 1088.30995456379, 787.642026481932, 349.32632456817106, 503.81586571046, 1025.96991261613, 686.208237421834]) #350136130, 358105468, 366503638,      1118.30737623314, 630.7783269532234, 461.595690858361, 
