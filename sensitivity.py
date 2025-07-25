@@ -62,10 +62,11 @@ import subprocess
 
 from astropy.coordinates import EarthLocation
 from scipy.optimize import minimize_scalar
+from outriggers_vlbi_pipeline.multibeamform import get_best_gain_calibrator
 
 
 # Load in pulsar dataframe for pulsar beamforming
-pulsar_df = pd.read_csv('/arc/home/rdarlinger/outriggers_vlbi_pipeline/src/outriggers_vlbi_pipeline/calibrators/known_pulsars.csv', comment='#')
+pulsar_df = pd.read_csv('/arc/projects/chime_frb/rdarlinger/Test_Locs_Outrigger_Events_on_disk - Positions.csv', comment='#')
 
 def chunked(seq, size):
     '''Used in pulsar beamforming'''
@@ -1040,6 +1041,7 @@ def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gain
             plt.ylabel("Frequency")
             plt.colorbar()
             plt.savefig(filepath_i)
+            plt.close()
 
 
 
