@@ -62,7 +62,8 @@ import subprocess
 
 from astropy.coordinates import EarthLocation
 from scipy.optimize import minimize_scalar
-from outriggers_vlbi_pipeline.multibeamform import get_best_gain_calibrator
+#from outriggers_vlbi_pipeline.src.outriggers_vlbi_pipeline.multibeamform import get_best_gain_calibrator 
+from outriggers_vlbi_pipeline.multibeamform import get_best_gain_calibrator 
 
 
 # Load in pulsar dataframe for pulsar beamforming
@@ -364,6 +365,7 @@ def process_data(events, telescope, gain=None, out_file=None, save_dir=None, DMs
     source_names = []
     event_ids_filt = []
     dates = []
+    #['event_no']['%s'%event_id]
     for idx, event_id in enumerate(events):
         print("Getting information for {}".format(event_id))
         event = master.events.get_event(event_id, full_header=True)
@@ -950,14 +952,14 @@ def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gain
         _timestamps = _index_map['time']['ctime']
         _transit_time = _timestamps[transit_idxs[i]:transit_idxs[i]+1]
 
-        filename = unix_to_gain_name(_transit_time[0], src.names)
+        filename = unix_to_gain_name(_transit_time[0], src_str)
         filepath = os.path.join(gains_output_dir, filename)
         if os.path.isfile(filepath):
             cmd= f"rm {filepath}"
             subprocess.run(cmd, shell=True, check=True)
             
         if not os.path.isfile(filepath):
-            print('Calculating gains for {0} transit at unix time {1}, {2}'.format(src.names, unix_times[i], filepath))
+            print('Calculating gains for {0} transit at unix time {1}, {2}'.format(src_str, unix_times[i], filepath))
             _freqs = _data['index_map']['freq']
 
             _vis = _data['vis']
@@ -1014,16 +1016,16 @@ def get_gains_from_N2(path_to_h5_files, transit_times=None, src_str="cyga", gain
                 else:
                     num_flagged_ids=len(flagged_ids)
                     print("Number of bad inputs:", num_flagged_ids)
-            
+            #print("Bad inputs:", flagged_ids)
             print("Beginning writeout process...")
             if gains_output_dir is not None:
-                filename = unix_to_gain_name(_transit_time[0], src.names)
+                filename = unix_to_gain_name(_transit_time[0], src_str)
                 filepath = os.path.join(gains_output_dir, filename)
                 #print(
                    # f'{dt.datetime.now().strftime("%Y%m%dT%H%M%S")}: Saving gains to {filepath}'
                 #)
                 with h5py.File(filepath, "w") as h5pyfile:
-                    h5pyfile.attrs['src_name'] = src.names
+                    h5pyfile.attrs['src_name'] = src_str
                     h5pyfile.create_dataset("gain", data = gains)
                     h5pyfile.create_dataset("weight", data = weights)
                     h5pyfile.create_dataset("gain_err", data = gain_err)
@@ -1262,7 +1264,7 @@ def rankN_approx(A, rank=1):
 
     N = A.shape[0]
 
-    evals, evecs = la.eigh(A, eigvals=(N - rank, N - 1))
+    evals, evecs = la.eigh(A, subset_by_index=[N - rank, N - 1])
 
     return np.dot(evecs, evals * evecs.T.conj())
 
@@ -1295,7 +1297,7 @@ def eigh_no_diagonal(A, niter=5, eigvals=None):
         for i in range(niter):
             Ac[np.diag_indices(Ac.shape[0])] = rankN_approx(Ac).diagonal()
 
-    return la.eigh(Ac, eigvals=eigvals)
+    return la.eigh(Ac, subset_by_index=eigvals)
 
 def eigh_special(A, zero_indices, niter=5):
 
@@ -1307,7 +1309,7 @@ def eigh_special(A, zero_indices, niter=5):
         for i in range(niter):
             Ac[zero_indices] = rankN_approx(Ac)[zero_indices]
 
-    return la.eigh(Ac, eigvals=None)
+    return la.eigh(Ac)
 
 def invert_no_zero(x):
     """Return the reciprocal, but ignoring zeros.
@@ -1612,8 +1614,10 @@ def find_files(file, file_path, toa_from_singlebeam, src_str="cyga", telescope="
     """
     Finds transit time of source closest to toa specified and finds corresponding file to that transit time plus checks if there are 20 minutes on either side
     of the given transit time
+    NOTE: Make sure to run get_best_gain_calibrator first to find the proper calibrator based on the solar transit
     
     NOTE: For use, you need a file of the names of the N2 files in the container folder which you can 
+    
     get by "datatrail ls gbo.acquisition.processed commissioning"
     to look at the container files, then "datatrail ps gbo.acquisition.processed 20241204T174051Z_gbo_corr --show-files > name.txt" to get the txt file
     Parameters
